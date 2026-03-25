@@ -1,6 +1,3 @@
-from collections import deque
-
-
 class TreeNode:
     def __init__(self, value: str):
         self.value = value
@@ -17,11 +14,16 @@ class TreeNode:
         return value in self.children
 
 
-def dfs(node: TreeNode, word: str) -> list[str]:
-    if len(node.children.keys()) == 0:
-        return [word]
+def add_branch(tree: TreeNode, branch: list[str]):
+    if len(branch) > 0:
+        if not tree.is_child(branch[0]):
+            tree.add_child(branch[0])
+        add_branch(tree.get_child(branch[0]), branch=branch[1:])
 
-    out = []
-    for key, node in node.children.items():
-        out.extend(dfs(node, word + key))
-    return out
+
+def remove_branch(tree: TreeNode, branch: list[str]):
+    if len(branch) > 0:
+        if tree.is_child(branch[1]):
+            remove_branch(tree, branch[1:])
+        else:
+            pass
