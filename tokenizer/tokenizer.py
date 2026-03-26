@@ -1,6 +1,7 @@
 import abc
 import json
 import os.path
+import re
 from collections import Counter
 from typing import Optional
 
@@ -8,7 +9,7 @@ import numpy as np
 from tqdm import tqdm
 
 from utils.dfs import dfs
-from utils.tree import TreeNode, add_branch
+from utils.tree import TreeNode, add_branch, remove_branch, is_branch
 
 
 class Tokenizer:
@@ -17,66 +18,40 @@ class Tokenizer:
             alphabet: set[str],
             max_iters: int = 100,
             max_length: int = 4,
+            special_characters: set = {"\n", "\t", " "},
     ):
         """
         Initialize BPE with specified number of merge operations
         """
         self.alphabet = alphabet if alphabet else set()
-        root: TreeNode = TreeNode(value="")  # Vocabulary of tokens
+        self.alphabet.update(special_characters)
+        self.special_characters = special_characters
+
+        root: TreeNode = TreeNode(key="")  # Vocabulary of tokens
         for char in alphabet:
-            root.add_child(char)
+            root.add_child(
+                TreeNode(
+                    key=char,
+                    is_word_leaf=True,
+                )
+            )
         self.dictionary = root
 
         self.max_iters = max_iters
         self.max_length = max_length
 
-    def get_word(self, text: list[str], i: int) -> tuple[str, int]:
-        node = self.dictionary
-        out = ""
-        while i < len(text) and node.is_child(text[i]):
-            node = node.children[text[i]]
-            out += text[i]
-            i += 1
-            if i < len(text):
-                print(i, text[i], len(text))
+    def basic_tokenizer(self, text: str) -> list[str]:
+        # Capture words and whitespace separately
+        tokens = re.findall(r'\S+|\n|\t| ', text)
+        return tokens
 
-        return out, i
+    @abc.abstractmethod
+    def decode(self, encoded_text: list[str]) -> str:
+        pass
 
-    def encode(self, text: list[str] | str) -> list[str]:
-        if isinstance(text, str):
-            text = [c for c in text]
-        out = []
-        i = 0
-        while i < len(text):
-            node: TreeNode = self.dictionary
-            word = ""
-
-            while i < len(text) and node.is_child(text[i]):
-                word += text[i]
-                node = node.children[text[i]]
-                i += 1
-
-            # Guardrail in case new things are encountered
-            if i < len(text) and text[i] not in self.dictionary.children:
-                self.dictionary.add_child(text[i])
-
-            out.append(word)
-
-        return out
-
-    def get_pair_freq(self, text: list[str]):
-        freq: dict[tuple[str, str], int] = {}
-        text_encoded = self.encode(text)
-
-        for i in range(1, len(text_encoded)):
-            a = text_encoded[i - 1]
-            b = text_encoded[i]
-            if len(a + b) <= self.max_length:
-                if (a, b) in freq:
-                    freq[(a, b)] += 1
-                else:
-                    freq[(a, b)] = 1
-        return {key: value for key, value in freq.items()}
+    @abc.abstractmethod
+    def encode(self, text: str) -> list[str]:
+        pass
 
     @abc.abstractmethod
     def update(
@@ -88,46 +63,99 @@ class Tokenizer:
         This represents the logic that every tokenizer has to implement for choosing the next union
         :return:
         """
+        pass
+
+    def concat_words(self, word_a: str, word_b: str) -> str:
+        """
+        This function represent the logic for which two word are concat.
+        """
+        return word_a + word_b
+
+    def are_concatenable(self, word_a: str, word_b: str) -> bool:
+        return True
+
+    def get_pair_freq(self, text: str) -> dict[tuple[str, str], int]:
+        text_encoded = self.encode(text)
+        freq: dict[tuple[str, str], int] = {}
+
+        for i in range(1, len(text_encoded)):
+            a = text_encoded[i - 1]
+            b = text_encoded[i]
+            if self.are_concatenable(a, b):
+                concat_word = self.concat_words(a, b)
+                if len(concat_word) <= self.max_length:
+                    if (a, b) in freq:
+                        freq[(a, b)] += 1
+                    else:
+                        freq[(a, b)] = 1
+        return freq
+
+    def check_vocabulary(self, text: str):
+        """
+        This method check whether the alphabet has to be updated or, if needed, instanciate a better dictionary
+        """
+        text_char = set(text)
+        # adding the remaining characters that are not written
+        for w in list(text_char - self.alphabet):
+            self.dictionary.add_child(
+                TreeNode(
+                    key=w,
+                    is_word_leaf=True,
+                )
+            )
+        # Updating the alphabet
+        self.alphabet.update(text_char)
 
     def train(self, text: str):
         """
-        Train BPE on input text
+        This function represent the training procedure for a tokenizer
         """
 
         # Check whether the original alphabet includes all the characters that are in the text
-        if len(self.dictionary.children.keys()) == 0:
-            text_char = set([c for c in text])
-            text_char.update(self.alphabet)
-            for w in text_char:
-                self.dictionary.add_child(w)
+        self.check_vocabulary(text)
 
-        text = [c for c in text]
         # Build initial vocabulary
         best_dict = self.dictionary
         best_value = -np.inf
+        ######## starting point ##########
+        # Encoding
+        encoded = self.encode(text)
+        # Frequencies
+        freq: dict[str, float] = Counter(encoded)
+        ##################################
 
         pbar = tqdm(range(self.max_iters))
-        for _ in pbar:
-            encoded = self.encode(text)
-            freq: dict[str, float] = Counter(encoded)
+        for i in pbar:
             pair_freq = self.get_pair_freq(text)
             length_dict = self.num_tokens()
-            cross_entropy = sum(v / len(encoded) * np.log(v / len(encoded)) if v != 0 else 0 for v in freq.values())
+            cross_entropy = -sum(v / len(encoded) * np.log(v / len(encoded)) if v != 0 else 0 for v in freq.values())
 
             words = self.update(pair_freq=pair_freq, freq=freq)
 
-            bayes = length_dict - cross_entropy * len(encoded)
-            pbar.set_description(f"bayes: {bayes:.3f}, length: {length_dict}")
+            bayes = length_dict + cross_entropy * len(encoded)
+            pbar.set_description(
+                f"CE: {cross_entropy * len(encoded):.3f}, length: {length_dict}, chosen words = {words}"
+            )
             # Early stopping
             if bayes > best_value:
                 best_value = bayes
                 best_dict = self.dictionary
-
-            key = words[0] + words[1]
-
-            add_branch(tree=self.dictionary, branch=[char for char in key])
+            tqdm.write(f"{self.get_tokens()}, {i}")
+            if (pair_freq[words] > 1
+                    or words[0] not in self.alphabet
+                    or words[1] not in self.alphabet):
+                key = self.concat_words(words[0], words[1])
+                add_branch(tree=self.dictionary, branch=key)
+            # Updating the variable for the next iteration
+            encoded = self.encode(text)
+            freq: dict[str, float] = Counter(encoded)
 
         self.dictionary = best_dict
+
+        # Removing unused token
+        # n_tokens = len(self.get_tokens())
+        # self.remove_unused_token(freq_encoded=freq)
+        # print(f" {n_tokens - len(self.get_tokens())} tokens removed ".center(80, "#"))
 
     def get_tokens(self) -> list[str]:
         out = list(self.dictionary.children.keys())
@@ -154,7 +182,7 @@ class Tokenizer:
         if os.path.exists(path):
             with open(path, "r") as f:
                 json_file = json.load(f)
-            root = TreeNode(value="")
+            root = TreeNode(key="")
             for el in json_file["alphabet"]:
                 root.add_child(el)
 
@@ -162,11 +190,10 @@ class Tokenizer:
                 add_branch(root, word)
 
     def remove_unused_token(self, freq_encoded: dict[str, float]):
-        token_used: list[str] = freq_encoded.keys()
+        # these are all the tokens that have been used for encoding the text
+        token_used: list[str] = list(freq_encoded.keys())
         all_tokens = self.get_tokens()
-        token_unused = set(all_tokens) - set(token_used)
-        # The alphabet cannot be removed
-        token_unused = token_unused - self.alphabet
-
+        token_unused = list(set(all_tokens) - set(token_used) - self.alphabet)
         for token in token_unused:
-            self.dictionary.remove_branch(branch=token)
+            if is_branch(self.dictionary, token):
+                remove_branch(tree=self.dictionary, branch=token)

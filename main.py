@@ -6,8 +6,7 @@ from collections import Counter
 
 import matplotlib.pyplot as plt
 
-from tokenizer.bpe import BytePairEncoding
-from tokenizer.word2sec import WordPiece
+from tokenizer.wordpiece import WordPiece
 
 
 def main():
@@ -18,8 +17,9 @@ def main():
 
     # Generate test text
     print("Generating test text...")
-    with open("./commedia.txt", "r") as f:
+    with open("./anelli.txt", "r") as f:
         train_text = f.read()
+        train_text = train_text.lower()
 
     print(f"Test text length: {len(train_text)} characters")
     print(f"Test text words: {len(train_text.split())} words")
@@ -30,24 +30,25 @@ def main():
     print("Training BPE with the whole text...")
     print("=" * 80)
     ita = {"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t",
-           "u", "v", "w", "x", "y", "z"}
+           "u", "v", "w", "x", "y", "z", "#", "!", '"', ":", ",", " ", ";", "-", "_", "0", "1", "2", "3", "4", "5", "6",
+           "7", "8", "9", "\n", "\t", " "}
     bpe = WordPiece(
         alphabet=ita,
-        max_iters=100
+        max_iters=100,
+        max_length=8
     )
-    bpe.train(train_text.lower())
+    bpe.train(train_text)
     print(" train ended ".center(80, "#"))
-    print(bpe.dictionary)
-    encoded_train = bpe.encode(train_text.lower())
-
+    encoded_train = bpe.encode(train_text)
+    tmp = Counter(encoded_train)
+    print(f"total number of miss-tokenization = {tmp['[UNK]']}")
     print(f"ratio = {len(encoded_train) / len(train_text)}")
 
-    print(bpe.get_tokens())
+    print(bpe.get_tokens()[:100])
     with open("./i_promessi_sposi.txt", "r") as f:
         test_text = f.read()
 
     encoded_test = bpe.encode(test_text)
-    print(len(encoded_test))
     print(f"ratio = {len(encoded_test) / len(test_text)}")
 
     cnt_train = Counter(encoded_train)
